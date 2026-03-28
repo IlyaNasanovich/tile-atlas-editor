@@ -1,0 +1,1165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tile atlas editor</title>
+  <style>
+    :root {
+      --bg: #1a1d23;
+      --panel: #242830;
+      --border: #3d4454;
+      --text: #e8eaed;
+      --muted: #9aa0a6;
+      --accent: #5c9fd4;
+      --danger: #e57373;
+      --ok: #81c784;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
+    button {
+      font: inherit; cursor: pointer; padding: 0.45rem 0.75rem; border-radius: 6px;
+      border: 1px solid var(--border); background: var(--panel); color: var(--text);
+    }
+    button:hover:not(:disabled) { border-color: var(--accent); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    button.primary { background: #2a4a66; border-color: var(--accent); }
+    button.danger { border-color: var(--danger); color: #ffcdd2; }
+    input[type="text"], input[type="number"] {
+      font: inherit; padding: 0.35rem 0.5rem; border-radius: 4px; border: 1px solid var(--border);
+      background: #181b22; color: var(--text); max-width: 100%;
+    }
+    label { font-size: 0.85rem; color: var(--muted); }
+    .wrap { display: flex; flex-direction: row; height: 100vh; overflow: hidden; }
+    .half {
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      border-right: 2px solid var(--border);
+    }
+    .half:last-child { border-right: none; }
+    .toolbar {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem;
+      padding: 0.5rem 0.75rem; background: var(--panel); border-bottom: 1px solid var(--border);
+    }
+    .toolbar .name-row { display: flex; align-items: center; gap: 0.5rem; flex: 1; min-width: 200px; }
+    .toolbar .name-row input[type="text"] { flex: 1; max-width: 280px; }
+    .tile-size-badge { font-size: 0.8rem; color: var(--muted); }
+    /* min-height: 0 so flex children can shrink below canvas size — enables .atlas-viewport scrolling */
+    .atlas-section { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0.5rem; gap: 0.5rem; }
+    /* stretch so row height = atlas-section height, not canvas height (flex-start made the row as tall as the canvas) */
+    .atlas-row { display: flex; align-items: stretch; gap: 0.5rem; flex: 1; min-height: 0; overflow: hidden; }
+    .atlas-viewport {
+      flex: 1; min-width: 0; min-height: 0; overflow: auto;
+      -webkit-overflow-scrolling: touch;
+      border: 1px solid var(--border); border-radius: 6px;
+      background: repeating-linear-gradient(-45deg, #2a2d35 0 10px, #22252c 10px 20px);
+    }
+    #atlasCanvas {
+      display: block; cursor: crosshair; flex: none;
+      /* CSS size set in JS to match width/height attrs — 1:1 pixels, no stretch */
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+    .atlas-actions { display: flex; flex-direction: column; gap: 0.5rem; flex-shrink: 0; align-self: flex-start; }
+    .meta-panel {
+      border-top: 1px solid var(--border); padding: 0.5rem 0.75rem; background: #1e2128;
+      max-height: 42vh; overflow: auto;
+    }
+    .meta-panel.hidden { display: none; }
+    .meta-panel h3 { margin: 0 0 0.5rem; font-size: 0.95rem; font-weight: 600; }
+    .tile-id-row { margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+    .second-layer-label { color: var(--text); font-size: 0.9rem; cursor: pointer; user-select: none; }
+    .second-layer-label input { margin-right: 0.35rem; vertical-align: middle; }
+    .rules-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    .rules-table th, .rules-table td { border: 1px solid var(--border); padding: 0.35rem 0.5rem; text-align: left; }
+    .rules-table th { background: var(--panel); color: var(--muted); width: 4.5rem; }
+    .rules-table td input[type="text"] { width: 100%; min-width: 120px; }
+    .rules-table tr.invalid td { background: rgba(229, 115, 115, 0.12); }
+    .sandbox-head { display: flex; align-items: center; justify-content: space-between; padding: 0.35rem 0.75rem; background: var(--panel); border-bottom: 1px solid var(--border); }
+    .sandbox-head span { font-size: 0.85rem; color: var(--muted); }
+    .sandbox-body { flex: 1; min-height: 0; padding: 0.5rem; display: flex; flex-direction: column; }
+    #sandboxCanvas { display: block; background: #12141a; border: 1px solid var(--border); border-radius: 6px; cursor: cell; flex: 1; width: 100%; min-height: 160px; }
+    .msg { font-size: 0.85rem; padding: 0.35rem 0.75rem; }
+    .msg.error { color: #ffcdd2; background: rgba(183, 28, 28, 0.25); }
+    .msg.ok { color: #c8e6c9; }
+    .msg.warn { color: #ffe082; background: rgba(255, 193, 7, 0.12); }
+    .upload-hint { font-size: 0.8rem; color: var(--muted); max-width: 100%; line-height: 1.3; }
+    .hidden-input { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="half" aria-label="Tile atlas">
+      <div class="toolbar">
+        <button type="button" id="btnUpload">Upload tile set</button>
+        <span class="upload-hint">You will be asked for the atlas PNG, then the JSON.</span>
+        <button type="button" id="btnNew" class="danger">New tile set</button>
+        <button type="button" id="btnDownload" disabled>Download tile set</button>
+        <div class="name-row">
+          <label for="setName">Name</label>
+          <input type="text" id="setName" placeholder="Tile set name" autocomplete="off" />
+          <span class="tile-size-badge" id="tileSizeLabel"></span>
+        </div>
+      </div>
+      <div id="globalMsg" class="msg" style="display:none;"></div>
+      <div class="atlas-section">
+        <div class="atlas-row">
+          <div class="atlas-viewport">
+            <canvas id="atlasCanvas" width="640" height="320"></canvas>
+          </div>
+          <div class="atlas-actions">
+            <button type="button" id="btnAddTile" class="primary">Add tile (image)</button>
+            <button type="button" id="btnRemoveTile" disabled>Remove selected</button>
+          </div>
+        </div>
+      </div>
+      <div id="metaPanel" class="meta-panel hidden">
+        <h3>Tile metadata</h3>
+        <div class="tile-id-row">
+          <label for="editTileId">Tile id</label>
+          <input type="text" id="editTileId" autocomplete="off" />
+        </div>
+        <div class="tile-id-row">
+          <label class="second-layer-label"><input type="checkbox" id="secondLayerCheck" /> Second layer</label>
+        </div>
+        <table class="rules-table">
+          <thead>
+            <tr><th>Side</th><th>Require</th><th>Neighbor tile ids (comma-separated)</th></tr>
+          </thead>
+          <tbody id="rulesBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="half" aria-label="Sandbox">
+      <div class="sandbox-head">
+        <span id="sandboxHint">Select a tile in the atlas, then click to place a base tile, or with Second layer selected stack on top (transparent areas show the tile below). Right-click or Shift+click erases the whole cell.</span>
+        <button type="button" id="btnResetSandbox">Reset sandbox</button>
+      </div>
+      <div class="sandbox-body">
+        <canvas id="sandboxCanvas" width="800" height="400"></canvas>
+      </div>
+    </section>
+  </div>
+
+  <input type="file" id="fileAddTile" class="hidden-input" accept="image/png,image/jpeg,image/webp,image/gif" />
+  <input type="file" id="fileUploadPng" class="hidden-input" accept="image/png,.png" />
+  <input type="file" id="fileUploadJson" class="hidden-input" accept="application/json,.json" />
+
+  <script>
+(function () {
+  const SIDES = ['up', 'right', 'bottom', 'left'];
+
+  /** @type {{ name: string, tileSize: number, tiles: Tile[] }} */
+  let state = {
+    name: 'Untitled',
+    tileSize: 0,
+    tiles: [],
+  };
+  let selectedUid = null;
+  /** When set, the next image added via file picker is placed at this grid cell. */
+  let pendingAddAt = null;
+  /** PNG chosen in upload flow; cleared after JSON is picked or upload is restarted. */
+  let pendingUploadPng = null;
+  /** @type {{ base: string | null, overlay: string | null }[][]} */
+  let sandboxGrid = [];
+
+  const SANDBOX_COLS = 18;
+  const SANDBOX_ROWS = 12;
+  /** Previous grid dimensions — used so cell size stays comparable when scaling */
+  const SANDBOX_COLS_BASE = 24;
+  const SANDBOX_ROWS_BASE = 16;
+
+  /**
+   * @typedef {Object} RuleSide
+   * @property {boolean} enabled
+   * @property {string} requireTileId
+   *
+   * @typedef {Object} Tile
+   * @property {string} uid
+   * @property {string} tileId
+   * @property {number} gridX
+   * @property {number} gridY
+   * @property {HTMLImageElement} image
+   * @property {Record<string, RuleSide>} rules
+   * @property {boolean} secondLayer
+   * @property {string} firstLayerTileIds
+   */
+
+  const el = {
+    atlasCanvas: document.getElementById('atlasCanvas'),
+    sandboxCanvas: document.getElementById('sandboxCanvas'),
+    setName: document.getElementById('setName'),
+    tileSizeLabel: document.getElementById('tileSizeLabel'),
+    metaPanel: document.getElementById('metaPanel'),
+    editTileId: document.getElementById('editTileId'),
+    secondLayerCheck: document.getElementById('secondLayerCheck'),
+    rulesBody: document.getElementById('rulesBody'),
+    btnAddTile: document.getElementById('btnAddTile'),
+    btnRemoveTile: document.getElementById('btnRemoveTile'),
+    btnUpload: document.getElementById('btnUpload'),
+    btnNew: document.getElementById('btnNew'),
+    btnDownload: document.getElementById('btnDownload'),
+    btnResetSandbox: document.getElementById('btnResetSandbox'),
+    fileAddTile: document.getElementById('fileAddTile'),
+    fileUploadPng: document.getElementById('fileUploadPng'),
+    fileUploadJson: document.getElementById('fileUploadJson'),
+    globalMsg: document.getElementById('globalMsg'),
+  };
+
+  const atlasCtx = el.atlasCanvas.getContext('2d');
+  const sandboxCtx = el.sandboxCanvas.getContext('2d');
+
+  function showMsg(text, kind) {
+    if (!text) {
+      el.globalMsg.style.display = 'none';
+      el.globalMsg.textContent = '';
+      el.globalMsg.className = 'msg';
+      return;
+    }
+    el.globalMsg.style.display = 'block';
+    el.globalMsg.textContent = text;
+    const cls =
+      kind === 'error' ? 'error' : kind === 'warn' ? 'warn' : 'ok';
+    el.globalMsg.className = 'msg ' + cls;
+  }
+
+  function uid() {
+    return 't_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+  }
+
+  function emptySandboxCell() {
+    return { base: null, overlay: null };
+  }
+
+  function initSandboxGrid() {
+    sandboxGrid = Array.from({ length: SANDBOX_ROWS }, () =>
+      Array.from({ length: SANDBOX_COLS }, () => emptySandboxCell())
+    );
+  }
+  initSandboxGrid();
+
+  /** @param {string} s */
+  function parseCommaSeparatedIds(s) {
+    return String(s)
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean);
+  }
+
+  function emptyRules() {
+    /** @type {Record<string, RuleSide>} */
+    const r = {};
+    SIDES.forEach((s) => {
+      r[s] = { enabled: false, requireTileId: '' };
+    });
+    return r;
+  }
+
+  function getTileByUid(u) {
+    return state.tiles.find((t) => t.uid === u) || null;
+  }
+
+  function getTileByTileId(id) {
+    return state.tiles.find((t) => t.tileId === id) || null;
+  }
+
+  function isTileIdTaken(tileId, exceptUid) {
+    return state.tiles.some((t) => t.tileId === tileId && t.uid !== exceptUid);
+  }
+
+  function maxGridDims() {
+    if (state.tiles.length === 0) return { maxX: -1, maxY: -1 };
+    let maxX = 0;
+    let maxY = 0;
+    state.tiles.forEach((t) => {
+      maxX = Math.max(maxX, t.gridX);
+      maxY = Math.max(maxY, t.gridY);
+    });
+    return { maxX, maxY };
+  }
+
+  /** Empty cells 8-adjacent to at least one tile; if the atlas is empty, only (0,0). */
+  function atlasPlaceholderCells() {
+    if (!state.tileSize) return [];
+    const used = new Set(state.tiles.map((t) => t.gridX + ',' + t.gridY));
+    if (state.tiles.length === 0) return [{ gridX: 0, gridY: 0 }];
+    const out = [];
+    const seen = new Set();
+    const dirs = [
+      [-1, -1],
+      [-1, 0],
+      [-1, 1],
+      [0, -1],
+      [0, 1],
+      [1, -1],
+      [1, 0],
+      [1, 1],
+    ];
+    for (const t of state.tiles) {
+      for (const [dx, dy] of dirs) {
+        const gx = t.gridX + dx;
+        const gy = t.gridY + dy;
+        if (gx < 0 || gy < 0) continue;
+        const key = gx + ',' + gy;
+        if (used.has(key) || seen.has(key)) continue;
+        seen.add(key);
+        out.push({ gridX: gx, gridY: gy });
+      }
+    }
+    return out;
+  }
+
+  /** Bounding box of all tiles plus placeholder slots (for canvas size). */
+  function atlasExtentMax() {
+    let maxX = -1;
+    let maxY = -1;
+    state.tiles.forEach((t) => {
+      maxX = Math.max(maxX, t.gridX);
+      maxY = Math.max(maxY, t.gridY);
+    });
+    atlasPlaceholderCells().forEach((p) => {
+      maxX = Math.max(maxX, p.gridX);
+      maxY = Math.max(maxY, p.gridY);
+    });
+    return { maxX, maxY };
+  }
+
+  function atlasCellFromEvent(ev) {
+    if (!state.tileSize) return null;
+    const pad = 2;
+    const { tileSize } = state;
+    const rect = el.atlasCanvas.getBoundingClientRect();
+    const sx = ((ev.clientX - rect.left) * el.atlasCanvas.width) / rect.width;
+    const sy = ((ev.clientY - rect.top) * el.atlasCanvas.height) / rect.height;
+    const gx = Math.floor((sx - pad) / tileSize);
+    const gy = Math.floor((sy - pad) / tileSize);
+    if (gx < 0 || gy < 0) return null;
+    return { gx, gy };
+  }
+
+  function repackTiles() {
+    const n = state.tiles.length;
+    const cols = Math.max(1, Math.ceil(Math.sqrt(n)));
+    state.tiles.forEach((t, i) => {
+      t.gridX = i % cols;
+      t.gridY = Math.floor(i / cols);
+    });
+  }
+
+  function nextFreeSlot() {
+    const used = new Set(state.tiles.map((t) => t.gridX + ',' + t.gridY));
+    let y = 0;
+    for (;;) {
+      for (let x = 0; x < 512; x++) {
+        if (!used.has(x + ',' + y)) return { gridX: x, gridY: y };
+      }
+      y++;
+    }
+  }
+
+  function resizeAtlasCanvas() {
+    const { tileSize } = state;
+    if (!tileSize) {
+      el.atlasCanvas.width = 640;
+      el.atlasCanvas.height = 280;
+      return;
+    }
+    const { maxX, maxY } = atlasExtentMax();
+    if (maxX < 0 || maxY < 0) {
+      el.atlasCanvas.width = 640;
+      el.atlasCanvas.height = 280;
+      return;
+    }
+    const pad = 2;
+    const w = (maxX + 1) * tileSize + pad * 2;
+    const h = (maxY + 1) * tileSize + pad * 2;
+    el.atlasCanvas.width = Math.max(320, w);
+    el.atlasCanvas.height = Math.max(200, h);
+  }
+
+  function syncAtlasCanvasCssSize() {
+    const c = el.atlasCanvas;
+    c.style.width = c.width + 'px';
+    c.style.height = c.height + 'px';
+  }
+
+  function drawAtlas() {
+    resizeAtlasCanvas();
+    const { tileSize } = state;
+    const pad = 2;
+    atlasCtx.clearRect(0, 0, el.atlasCanvas.width, el.atlasCanvas.height);
+    if (!tileSize) {
+      atlasCtx.fillStyle = '#2a2d35';
+      atlasCtx.font = '14px system-ui';
+      atlasCtx.fillText('Create a new tile set or upload to begin.', pad, 24);
+      syncAtlasCanvasCssSize();
+      return;
+    }
+    state.tiles.forEach((t) => {
+      const x = pad + t.gridX * tileSize;
+      const y = pad + t.gridY * tileSize;
+      atlasCtx.drawImage(t.image, x, y, tileSize, tileSize);
+      const sel = t.uid === selectedUid;
+      atlasCtx.strokeStyle = sel ? '#5c9fd4' : '#555';
+      atlasCtx.lineWidth = sel ? 3 : 1;
+      atlasCtx.strokeRect(x, y, tileSize, tileSize);
+      atlasCtx.fillStyle = 'rgba(0,0,0,0.55)';
+      atlasCtx.fillRect(x, y + tileSize - 16, tileSize, 16);
+      atlasCtx.fillStyle = '#fff';
+      atlasCtx.font = '11px system-ui';
+      const label = t.tileId.length > 12 ? t.tileId.slice(0, 11) + '…' : t.tileId;
+      atlasCtx.fillText(label, x + 3, y + tileSize - 4);
+    });
+    atlasPlaceholderCells().forEach((p) => {
+      const x = pad + p.gridX * tileSize;
+      const y = pad + p.gridY * tileSize;
+      atlasCtx.fillStyle = 'rgba(92, 159, 212, 0.12)';
+      atlasCtx.fillRect(x, y, tileSize, tileSize);
+      atlasCtx.setLineDash([6, 4]);
+      atlasCtx.strokeStyle = '#6a8aaa';
+      atlasCtx.lineWidth = 2;
+      atlasCtx.strokeRect(x + 1, y + 1, tileSize - 2, tileSize - 2);
+      atlasCtx.setLineDash([]);
+      const fs = Math.max(12, Math.floor(tileSize * 0.32));
+      atlasCtx.fillStyle = 'rgba(180, 195, 210, 0.85)';
+      atlasCtx.font = 'bold ' + fs + 'px system-ui';
+      atlasCtx.textAlign = 'center';
+      atlasCtx.textBaseline = 'middle';
+      atlasCtx.fillText('+', x + tileSize / 2, y + tileSize / 2);
+    });
+    syncAtlasCanvasCssSize();
+  }
+
+  function resizeSandboxCanvas() {
+    const rect = el.sandboxCanvas.parentElement.getBoundingClientRect();
+    const w = Math.max(320, Math.floor(rect.width) - 4);
+    const h = Math.max(200, Math.floor(rect.height) - 4);
+    el.sandboxCanvas.width = w;
+    el.sandboxCanvas.height = h;
+  }
+
+  /**
+   * Integer cell size (25% larger than the old 24×16 baseline), pixel-aligned grid.
+   * @returns {{ cs: number, cw: number, ch: number, ox: number, oy: number, w: number, h: number }}
+   */
+  function sandboxMetrics() {
+    resizeSandboxCanvas();
+    const w = el.sandboxCanvas.width;
+    const h = el.sandboxCanvas.height;
+    const baseline = Math.min(w / SANDBOX_COLS_BASE, h / SANDBOX_ROWS_BASE);
+    const maxFit = Math.min(w / SANDBOX_COLS, h / SANDBOX_ROWS);
+    const cs = Math.max(1, Math.floor(Math.min(baseline * 1.25, maxFit)));
+    const cw = cs * SANDBOX_COLS;
+    const ch = cs * SANDBOX_ROWS;
+    const ox = Math.round((w - cw) / 2);
+    const oy = Math.round((h - ch) / 2);
+    return { cs, cw, ch, ox, oy, w, h };
+  }
+
+  function drawSandbox() {
+    const m = sandboxMetrics();
+    const { cs, cw, ch, ox, oy, w, h } = m;
+    sandboxCtx.fillStyle = '#12141a';
+    sandboxCtx.fillRect(0, 0, w, h);
+    sandboxCtx.strokeStyle = '#2a2d40';
+    sandboxCtx.lineWidth = 1;
+    for (let r = 0; r <= SANDBOX_ROWS; r++) {
+      const y = oy + r * cs;
+      sandboxCtx.beginPath();
+      sandboxCtx.moveTo(ox + 0.5, y + 0.5);
+      sandboxCtx.lineTo(ox + cw - 0.5, y + 0.5);
+      sandboxCtx.stroke();
+    }
+    for (let c = 0; c <= SANDBOX_COLS; c++) {
+      const x = ox + c * cs;
+      sandboxCtx.beginPath();
+      sandboxCtx.moveTo(x + 0.5, oy + 0.5);
+      sandboxCtx.lineTo(x + 0.5, oy + ch - 0.5);
+      sandboxCtx.stroke();
+    }
+    const prevSmoothing = sandboxCtx.imageSmoothingEnabled;
+    sandboxCtx.imageSmoothingEnabled = false;
+    function drawCellLayer(tileId, r, c) {
+      if (!tileId) return;
+      const tile = getTileByTileId(tileId);
+      if (!tile || !state.tileSize) return;
+      const scale = cs / state.tileSize;
+      sandboxCtx.save();
+      sandboxCtx.translate(ox + c * cs, oy + r * cs);
+      sandboxCtx.scale(scale, scale);
+      sandboxCtx.drawImage(tile.image, 0, 0);
+      sandboxCtx.restore();
+    }
+    for (let r = 0; r < SANDBOX_ROWS; r++) {
+      for (let c = 0; c < SANDBOX_COLS; c++) {
+        const cell = sandboxGrid[r][c];
+        drawCellLayer(cell.base, r, c);
+        drawCellLayer(cell.overlay, r, c);
+      }
+    }
+    sandboxCtx.imageSmoothingEnabled = prevSmoothing;
+  }
+
+  function syncToolbar() {
+    el.setName.value = state.name;
+    if (state.tileSize) {
+      el.tileSizeLabel.textContent = 'Tile size: ' + state.tileSize + '×' + state.tileSize + ' px (fixed)';
+    } else {
+      el.tileSizeLabel.textContent = '';
+    }
+    el.btnDownload.disabled = state.tiles.length === 0;
+    el.btnRemoveTile.disabled = !selectedUid;
+    el.btnAddTile.disabled = !state.tileSize;
+  }
+
+  function syncMetaPanel() {
+    const t = selectedUid ? getTileByUid(selectedUid) : null;
+    if (!t) {
+      el.metaPanel.classList.add('hidden');
+      el.editTileId.value = '';
+      el.secondLayerCheck.checked = false;
+      el.rulesBody.innerHTML = '';
+      return;
+    }
+    el.metaPanel.classList.remove('hidden');
+    el.editTileId.value = t.tileId;
+    el.secondLayerCheck.checked = !!t.secondLayer;
+    el.rulesBody.innerHTML = '';
+    SIDES.forEach((side) => {
+      const tr = document.createElement('tr');
+      tr.setAttribute('data-rule-side', side);
+      const rule = t.rules[side];
+      tr.innerHTML =
+        '<th>' +
+        side +
+        '</th><td><input type="checkbox" data-side="' +
+        side +
+        '" ' +
+        (rule.enabled ? 'checked' : '') +
+        ' /></td><td><input type="text" data-side="' +
+        side +
+        '" placeholder="e.g. grass, dirt" value="' +
+        escapeAttr(rule.requireTileId) +
+        '" ' +
+        (!rule.enabled ? 'disabled' : '') +
+        ' /></td>';
+      el.rulesBody.appendChild(tr);
+    });
+    const flRow = document.createElement('tr');
+    flRow.setAttribute('data-first-layer-row', '1');
+    const flDisabled = !t.secondLayer;
+    flRow.innerHTML =
+      '<th>First layer</th><td>—</td><td><input type="text" id="firstLayerTileIdsInput" placeholder="optional — e.g. grass, dirt" value="' +
+      escapeAttr(t.firstLayerTileIds || '') +
+      '" ' +
+      (flDisabled ? 'disabled' : '') +
+      ' /></td>';
+    el.rulesBody.appendChild(flRow);
+    validateRulesRows();
+  }
+
+  function escapeAttr(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;');
+  }
+
+  function validateRulesRows() {
+    const t = selectedUid ? getTileByUid(selectedUid) : null;
+    if (!t) return;
+    el.rulesBody.querySelectorAll('tr[data-rule-side]').forEach((row) => {
+      const cb = row.querySelector('input[type="checkbox"]');
+      const ti = row.querySelector('input[type="text"]');
+      const enabled = cb && cb.checked;
+      let invalid = false;
+      if (enabled && (!ti || parseCommaSeparatedIds(ti.value).length === 0)) invalid = true;
+      row.classList.toggle('invalid', invalid);
+    });
+  }
+
+  function readRulesFromDom() {
+    const t = selectedUid ? getTileByUid(selectedUid) : null;
+    if (!t) return;
+    el.rulesBody.querySelectorAll('tr[data-rule-side]').forEach((row) => {
+      const side = row.getAttribute('data-rule-side');
+      if (!side || !SIDES.includes(side)) return;
+      const cb = row.querySelector('input[type="checkbox"]');
+      const ti = row.querySelector('input[type="text"]');
+      if (!t.rules[side]) t.rules[side] = { enabled: false, requireTileId: '' };
+      t.rules[side].enabled = !!(cb && cb.checked);
+      t.rules[side].requireTileId = ti ? ti.value.trim() : '';
+    });
+  }
+
+  function readLayerMetaFromDom() {
+    const t = selectedUid ? getTileByUid(selectedUid) : null;
+    if (!t) return;
+    t.secondLayer = !!el.secondLayerCheck.checked;
+    const flInput = document.getElementById('firstLayerTileIdsInput');
+    if (!t.secondLayer) {
+      t.firstLayerTileIds = '';
+      if (flInput) flInput.value = '';
+    } else if (flInput) {
+      t.firstLayerTileIds = flInput.value.trim();
+    }
+  }
+
+  function readTileMetadataFromDom() {
+    readRulesFromDom();
+    readLayerMetaFromDom();
+  }
+
+  el.rulesBody.addEventListener('change', (e) => {
+    const target = e.target;
+    if (target instanceof HTMLInputElement && target.type === 'checkbox') {
+      const side = target.getAttribute('data-side');
+      if (!side) return;
+      const row = target.closest('tr');
+      const ti = row && row.querySelector('input[type="text"]');
+      if (ti) {
+        ti.disabled = !target.checked;
+        if (!target.checked) ti.value = '';
+      }
+      readTileMetadataFromDom();
+      validateRulesRows();
+    }
+  });
+  el.rulesBody.addEventListener('input', () => {
+    readTileMetadataFromDom();
+    validateRulesRows();
+  });
+
+  el.secondLayerCheck.addEventListener('change', () => {
+    const t = selectedUid ? getTileByUid(selectedUid) : null;
+    if (!t) return;
+    readLayerMetaFromDom();
+    const flInput = document.getElementById('firstLayerTileIdsInput');
+    if (flInput) {
+      flInput.disabled = !el.secondLayerCheck.checked;
+      if (!el.secondLayerCheck.checked) {
+        flInput.value = '';
+        t.firstLayerTileIds = '';
+      }
+    }
+    validateRulesRows();
+  });
+
+  el.editTileId.addEventListener('change', () => {
+    const t = selectedUid ? getTileByUid(selectedUid) : null;
+    if (!t) return;
+    const next = el.editTileId.value.trim();
+    if (!next) {
+      showMsg('Tile id cannot be empty.', 'error');
+      el.editTileId.value = t.tileId;
+      return;
+    }
+    if (isTileIdTaken(next, t.uid)) {
+      showMsg('That tile id is already used.', 'error');
+      el.editTileId.value = t.tileId;
+      return;
+    }
+    const oldId = t.tileId;
+    t.tileId = next;
+    for (let r = 0; r < SANDBOX_ROWS; r++) {
+      for (let c = 0; c < SANDBOX_COLS; c++) {
+        const cell = sandboxGrid[r][c];
+        if (cell.base === oldId) cell.base = next;
+        if (cell.overlay === oldId) cell.overlay = next;
+      }
+    }
+    showMsg('', '');
+    drawAtlas();
+    drawSandbox();
+  });
+
+  function selectTile(uid) {
+    if (selectedUid) readTileMetadataFromDom();
+    selectedUid = uid;
+    syncToolbar();
+    syncMetaPanel();
+    drawAtlas();
+  }
+
+  el.atlasCanvas.addEventListener('click', (ev) => {
+    if (!state.tileSize) return;
+    const cell = atlasCellFromEvent(ev);
+    if (!cell) {
+      pendingAddAt = null;
+      selectTile(null);
+      return;
+    }
+    const { gx, gy } = cell;
+    const hit = state.tiles.find((t) => t.gridX === gx && t.gridY === gy);
+    if (hit) {
+      pendingAddAt = null;
+      selectTile(hit.uid);
+      return;
+    }
+    const isPh = atlasPlaceholderCells().some((p) => p.gridX === gx && p.gridY === gy);
+    if (isPh) {
+      pendingAddAt = { gridX: gx, gridY: gy };
+      el.fileAddTile.click();
+      return;
+    }
+    pendingAddAt = null;
+    selectTile(null);
+  });
+
+  el.atlasCanvas.addEventListener('mousemove', (ev) => {
+    if (!state.tileSize) {
+      el.atlasCanvas.style.cursor = '';
+      return;
+    }
+    const cell = atlasCellFromEvent(ev);
+    if (!cell) {
+      el.atlasCanvas.style.cursor = '';
+      return;
+    }
+    const { gx, gy } = cell;
+    if (state.tiles.some((t) => t.gridX === gx && t.gridY === gy)) {
+      el.atlasCanvas.style.cursor = 'pointer';
+      return;
+    }
+    const isPh = atlasPlaceholderCells().some((p) => p.gridX === gx && p.gridY === gy);
+    el.atlasCanvas.style.cursor = isPh ? 'pointer' : 'default';
+  });
+
+  el.atlasCanvas.addEventListener('mouseleave', () => {
+    el.atlasCanvas.style.cursor = '';
+  });
+
+  function loadImageFile(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(img);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error('Could not load image'));
+      };
+      img.src = url;
+    });
+  }
+
+  el.btnAddTile.addEventListener('click', () => {
+    pendingAddAt = null;
+    el.fileAddTile.click();
+  });
+  el.fileAddTile.addEventListener('change', async () => {
+    const file = el.fileAddTile.files && el.fileAddTile.files[0];
+    el.fileAddTile.value = '';
+    if (!file || !state.tileSize) {
+      pendingAddAt = null;
+      return;
+    }
+    try {
+      const img = await loadImageFile(file);
+      if (img.naturalWidth !== state.tileSize || img.naturalHeight !== state.tileSize) {
+        pendingAddAt = null;
+        showMsg(
+          'Invalid tile size: image must be ' +
+            state.tileSize +
+            '×' +
+            state.tileSize +
+            ' px.',
+          'error'
+        );
+        return;
+      }
+      const base = file.name.replace(/\.[^.]+$/, '') || 'tile';
+      let tileId = base;
+      let n = 1;
+      while (isTileIdTaken(tileId, null)) {
+        tileId = base + '_' + n++;
+      }
+      const pos = pendingAddAt || nextFreeSlot();
+      pendingAddAt = null;
+      state.tiles.push({
+        uid: uid(),
+        tileId,
+        gridX: pos.gridX,
+        gridY: pos.gridY,
+        image: img,
+        rules: emptyRules(),
+        secondLayer: false,
+        firstLayerTileIds: '',
+      });
+      showMsg('Tile added.', 'ok');
+      selectTile(state.tiles[state.tiles.length - 1].uid);
+      syncToolbar();
+      drawAtlas();
+    } catch (e) {
+      pendingAddAt = null;
+      showMsg(String(e.message || e), 'error');
+    }
+  });
+
+  el.btnRemoveTile.addEventListener('click', () => {
+    if (!selectedUid) return;
+    const t = getTileByUid(selectedUid);
+    state.tiles = state.tiles.filter((x) => x.uid !== selectedUid);
+    selectedUid = null;
+    if (t) {
+      for (let r = 0; r < SANDBOX_ROWS; r++) {
+        for (let c = 0; c < SANDBOX_COLS; c++) {
+          const cell = sandboxGrid[r][c];
+          if (cell.base === t.tileId) cell.base = null;
+          if (cell.overlay === t.tileId) cell.overlay = null;
+        }
+      }
+    }
+    repackTiles();
+    syncToolbar();
+    syncMetaPanel();
+    drawAtlas();
+    drawSandbox();
+    showMsg('Tile removed.', 'ok');
+  });
+
+  el.setName.addEventListener('change', () => {
+    state.name = el.setName.value.trim() || 'Untitled';
+    el.setName.value = state.name;
+  });
+
+  el.btnNew.addEventListener('click', () => {
+    if (!confirm('Create a new tile set? All current tiles will be lost.')) return;
+    if (!confirm('Are you sure? This cannot be undone.')) return;
+    const name = prompt('Tile set name:', state.name || 'Untitled');
+    if (name === null) return;
+    const wStr = prompt('Tile width and height (square), in pixels:', '32');
+    if (wStr === null) return;
+    const w = parseInt(wStr, 10);
+    if (!Number.isFinite(w) || w < 1 || w > 4096) {
+      showMsg('Invalid tile size.', 'error');
+      return;
+    }
+    state.name = name.trim() || 'Untitled';
+    state.tileSize = w;
+    state.tiles = [];
+    selectedUid = null;
+    initSandboxGrid();
+    el.setName.value = state.name;
+    showMsg('New tile set created.', 'ok');
+    syncToolbar();
+    syncMetaPanel();
+    drawAtlas();
+    drawSandbox();
+  });
+
+  function rulesToExport(tile) {
+    const out = [];
+    SIDES.forEach((side) => {
+      const r = tile.rules[side];
+      if (r && r.enabled && r.requireTileId.trim()) {
+        out.push({ side, requireTileId: r.requireTileId.trim() });
+      }
+    });
+    return out;
+  }
+
+  el.btnDownload.addEventListener('click', () => {
+    if (state.tiles.length === 0 || !state.tileSize) return;
+    const sel = selectedUid ? getTileByUid(selectedUid) : null;
+    if (sel) readTileMetadataFromDom();
+    for (const tile of state.tiles) {
+      for (const side of SIDES) {
+        const r = tile.rules[side];
+        if (r && r.enabled && parseCommaSeparatedIds(r.requireTileId).length === 0) {
+          showMsg(
+            'Rule for "' + side + '" on tile "' + tile.tileId + '" requires at least one neighbor tile id.',
+            'error'
+          );
+          selectTile(tile.uid);
+          syncMetaPanel();
+          return;
+        }
+      }
+    }
+
+    const { maxX, maxY } = maxGridDims();
+    const tw = (maxX + 1) * state.tileSize;
+    const th = (maxY + 1) * state.tileSize;
+    const c = document.createElement('canvas');
+    c.width = tw;
+    c.height = th;
+    const ctx = c.getContext('2d');
+    state.tiles.forEach((tile) => {
+      ctx.drawImage(
+        tile.image,
+        tile.gridX * state.tileSize,
+        tile.gridY * state.tileSize,
+        state.tileSize,
+        state.tileSize
+      );
+    });
+
+    const json = {
+      name: state.name,
+      widthOfTile: state.tileSize,
+      tiles: state.tiles.map((tile) => ({
+        tileId: tile.tileId,
+        position: { x: tile.gridX, y: tile.gridY },
+        secondLayer: !!tile.secondLayer,
+        firstLayerTileIds: tile.secondLayer ? (tile.firstLayerTileIds || '').trim() : '',
+        rules: rulesToExport(tile),
+      })),
+    };
+
+    const base = (state.name || 'tileset').replace(/[^\w\-]+/g, '_') || 'tileset';
+    c.toBlob((blob) => {
+      if (!blob) {
+        showMsg('Could not create PNG.', 'error');
+        return;
+      }
+      triggerDownload(blob, base + '.png', 'image/png');
+      const jblob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' });
+      triggerDownload(jblob, base + '.json', 'application/json');
+      showMsg('Download started (PNG + JSON).', 'ok');
+    });
+  });
+
+  function triggerDownload(blob, filename, mime) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }
+
+  async function loadTileSetFromFiles(pngFile, jsonFile) {
+    try {
+      const text = await jsonFile.text();
+      const data = JSON.parse(text);
+      if (typeof data.name !== 'string' || typeof data.widthOfTile !== 'number') {
+        showMsg('Invalid JSON: need name and widthOfTile.', 'error');
+        return;
+      }
+      if (!Array.isArray(data.tiles)) {
+        showMsg('Invalid JSON: tiles must be an array.', 'error');
+        return;
+      }
+      const img = await loadImageFile(pngFile);
+      const w = data.widthOfTile;
+      state.name = data.name.trim() || 'Untitled';
+      state.tileSize = w;
+      state.tiles = [];
+      selectedUid = null;
+      initSandboxGrid();
+
+      const occupied = new Set();
+
+      for (const entry of data.tiles) {
+        if (!entry || typeof entry.tileId !== 'string') {
+          showMsg('Invalid tile entry: tileId required.', 'error');
+          state.tiles = [];
+          syncToolbar();
+          drawAtlas();
+          return;
+        }
+        const px = entry.position && typeof entry.position.x === 'number' ? entry.position.x : 0;
+        const py = entry.position && typeof entry.position.y === 'number' ? entry.position.y : 0;
+        const posKey = px + ',' + py;
+        if (occupied.has(posKey)) {
+          showMsg('Duplicate grid position in JSON: (' + px + ', ' + py + ').', 'error');
+          state.tiles = [];
+          syncToolbar();
+          drawAtlas();
+          return;
+        }
+        occupied.add(posKey);
+        const sx = px * w;
+        const sy = py * w;
+        if (sx + w > img.naturalWidth || sy + w > img.naturalHeight || sx < 0 || sy < 0) {
+          showMsg(
+            'Invalid atlas: tile "' + entry.tileId + '" does not fit in the PNG for this widthOfTile.',
+            'error'
+          );
+          state.tiles = [];
+          syncToolbar();
+          drawAtlas();
+          return;
+        }
+        const slice = document.createElement('canvas');
+        slice.width = w;
+        slice.height = w;
+        slice.getContext('2d').drawImage(img, sx, sy, w, w, 0, 0, w, w);
+        const tileImg = new Image();
+        await new Promise((res, rej) => {
+          tileImg.onload = res;
+          tileImg.onerror = rej;
+          tileImg.src = slice.toDataURL('image/png');
+        });
+        const rules = emptyRules();
+        if (Array.isArray(entry.rules)) {
+          entry.rules.forEach((r) => {
+            if (!r || !SIDES.includes(r.side)) return;
+            let req = '';
+            if (Array.isArray(r.requireTileIds)) {
+              req = r.requireTileIds
+                .map((x) => String(x).trim())
+                .filter(Boolean)
+                .join(', ');
+            } else if (typeof r.requireTileId === 'string') {
+              req = r.requireTileId;
+            }
+            if (req.trim()) {
+              rules[r.side] = { enabled: true, requireTileId: req.trim() };
+            }
+          });
+        }
+        if (isTileIdTaken(entry.tileId, null)) {
+          showMsg('Duplicate tileId in file: ' + entry.tileId, 'error');
+          state.tiles = [];
+          syncToolbar();
+          drawAtlas();
+          return;
+        }
+        const secondLayer = !!entry.secondLayer;
+        const firstLayerTileIds =
+          secondLayer && typeof entry.firstLayerTileIds === 'string'
+            ? entry.firstLayerTileIds.trim()
+            : '';
+        state.tiles.push({
+          uid: uid(),
+          tileId: entry.tileId,
+          gridX: px,
+          gridY: py,
+          image: tileImg,
+          rules,
+          secondLayer,
+          firstLayerTileIds,
+        });
+      }
+      el.setName.value = state.name;
+      showMsg('Tile set loaded.', 'ok');
+      syncToolbar();
+      syncMetaPanel();
+      drawAtlas();
+      drawSandbox();
+    } catch (e) {
+      showMsg(String(e.message || e), 'error');
+    }
+  }
+
+  el.btnUpload.addEventListener('click', () => {
+    pendingUploadPng = null;
+    el.fileUploadPng.click();
+  });
+
+  el.fileUploadPng.addEventListener('change', () => {
+    const file = el.fileUploadPng.files && el.fileUploadPng.files[0];
+    el.fileUploadPng.value = '';
+    if (!file) return;
+    const name = file.name.toLowerCase();
+    if (!name.endsWith('.png')) {
+      showMsg('Please select a .png atlas file.', 'error');
+      return;
+    }
+    pendingUploadPng = file;
+    el.fileUploadJson.click();
+  });
+
+  el.fileUploadJson.addEventListener('change', async () => {
+    const jsonFile = el.fileUploadJson.files && el.fileUploadJson.files[0];
+    el.fileUploadJson.value = '';
+    const pngFile = pendingUploadPng;
+    pendingUploadPng = null;
+    if (!jsonFile) {
+      return;
+    }
+    if (!pngFile) {
+      showMsg('Start with Upload tile set and choose the PNG first.', 'error');
+      return;
+    }
+    const jname = jsonFile.name.toLowerCase();
+    if (!jname.endsWith('.json')) {
+      showMsg('Please select a .json file.', 'error');
+      return;
+    }
+    await loadTileSetFromFiles(pngFile, jsonFile);
+  });
+
+  function sandboxCellFromEvent(ev) {
+    const { cs, cw, ch, ox, oy, w, h } = sandboxMetrics();
+    const rect = el.sandboxCanvas.getBoundingClientRect();
+    const mx = ((ev.clientX - rect.left) * w) / rect.width - ox;
+    const my = ((ev.clientY - rect.top) * h) / rect.height - oy;
+    const c = Math.floor(mx / cs);
+    const r = Math.floor(my / cs);
+    if (r < 0 || r >= SANDBOX_ROWS || c < 0 || c >= SANDBOX_COLS) return null;
+    return { r, c };
+  }
+
+  function applySandboxCell(ev, erase) {
+    const cell = sandboxCellFromEvent(ev);
+    if (!cell) return;
+    const slot = sandboxGrid[cell.r][cell.c];
+    if (erase) {
+      slot.base = null;
+      slot.overlay = null;
+      drawSandbox();
+      return;
+    }
+    const t = selectedUid ? getTileByUid(selectedUid) : null;
+    if (!t) {
+      showMsg('Select a tile in the atlas first.', 'error');
+      return;
+    }
+    if (t.secondLayer) {
+      const allowed = parseCommaSeparatedIds(t.firstLayerTileIds);
+      if (allowed.length > 0 && slot.base && !allowed.includes(slot.base)) {
+        showMsg(
+          'First layer under this cell is not in the allowed list for this overlay; overlay was still placed.',
+          'warn'
+        );
+      }
+      slot.overlay = t.tileId;
+    } else {
+      slot.base = t.tileId;
+      slot.overlay = null;
+    }
+    drawSandbox();
+  }
+
+  el.sandboxCanvas.addEventListener('click', (ev) => {
+    if (ev.button !== 0) return;
+    applySandboxCell(ev, ev.shiftKey);
+  });
+
+  el.sandboxCanvas.addEventListener('mousedown', (ev) => {
+    if (ev.button === 2) {
+      ev.preventDefault();
+      applySandboxCell(ev, true);
+    }
+  });
+
+  el.sandboxCanvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  el.btnResetSandbox.addEventListener('click', () => {
+    initSandboxGrid();
+    drawSandbox();
+    showMsg('Sandbox reset.', 'ok');
+  });
+
+  window.addEventListener('resize', () => {
+    drawAtlas();
+    drawSandbox();
+  });
+
+  el.setName.value = state.name;
+  syncToolbar();
+  syncMetaPanel();
+  drawAtlas();
+  drawSandbox();
+})();
+  </script>
+</body>
+</html>
